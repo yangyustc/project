@@ -1,0 +1,177 @@
+import tensorflow.compat.v1 as tf
+import numpy as np
+import matplotlib.pyplot as plt
+
+tf.disable_eager_execution()
+
+def img_inputs(real_size, latent_size):
+    """
+    real img and latent
+
+    """
+    real_img = tf.placeholder(tf.float32, [None, real_size], name='real_img')
+    latent_z = tf.placeholder(tf.float32, [None, latent_size], name='latent_z')
+
+    return real_img, latent_z
+
+def view_samples(epoch, samples):
+    fig, axes = plt.subplots(figsize=(7, 7), nrows=5, ncols=5, sharey=True, sharex=True)
+    for ax, img in zip(axes.flatten(), samples[epoch][1]):
+        ax.xaxis.set_visible(False)
+        ax.yaxis.set_visible(False)
+        im = ax.imshow(img.reshape((28, 28)), cmap='Greys_r')
+    plt.show()
+    return fig, axes
+
+def encoder(real_img, n_units, out_dim, reuse=False, alpha=0.01):
+    """
+    encoder
+
+    n_units: hidden layer nodes
+    out_dim: size of output
+    alpha: leaky ReLU
+    """
+    with tf.variable_scope("encoder", reuse=reuse):
+        # hidden layer
+        hidden1 = tf.layers.dense(real_img, n_units)
+        # leaky ReLU
+        hidden1 = tf.maximum(alpha * hidden1, hidden1)
+        # dropout
+        hidden1 = tf.layers.dropout(hidden1, rate=0.2)
+
+        hidden1 = tf.layers.dense(hidden1, n_units)
+        hidden1 = tf.maximum(alpha * hidden1, hidden1)
+        hidden1 = tf.layers.dropout(hidden1, rate=0.2)
+
+        hidden1 = tf.layers.dense(hidden1, n_units)
+        hidden1 = tf.maximum(alpha * hidden1, hidden1)
+        hidden1 = tf.layers.dropout(hidden1, rate=0.2)
+
+        # logits & outputs
+        z_mu =tf.layers.dense(hidden1, out_dim)
+        z_logsigma = tf.layers.dense(hidden1, out_dim)
+
+        return z_mu, z_logsigma
+
+def sample_z(mu, log_sigma):
+    eps = tf.random_normal(shape=tf.shape(mu))
+    return mu + tf.exp(log_sigma/ 2) * eps
+
+def decoder(latent, n_units, out_dim, reuse=False, alpha=0.01):
+    """
+    decoder
+
+    n_units: hidden layer nodes
+    alpha: Leaky ReLU
+    """
+
+    with tf.variable_scope("decoder", reuse=reuse):
+        # hidden layer
+        hidden1 = tf.layers.dense(latent, n_units)
+        hidden1 = tf.maximum(alpha * hidden1, hidden1)
+
+        hidden1 = tf.layers.dense(hidden1, n_units)
+        hidden1 = tf.maximum(alpha * hidden1, hidden1)
+        hidden1 = tf.layers.dropout(hidden1, rate=0.2)
+
+        hidden1 = tf.layers.dense(hidden1, n_units)
+        hidden1 = tf.maximum(alpha * hidden1, hidden1)
+        hidden1 = tf.layers.dropout(hidden1, rate=0.2)
+
+        # logits & outputs
+        logits = tf.layers.dense(hidden1, out_dim)
+        outputs = tf.sigmoid(logits)
+
+        return logits, outputs
+
+img_size = 784
+latent_size = 100
+# encoder hidden layer nodes
+e_units = 128
+# decoder hidden layer nodes
+d_units = 128
+# leaky ReLU
+alpha = 0.01
+# learning_rate
+learning_rate = 0.001
+# label smoothing
+smooth = 0.1
+
+#set up
+
+tf.reset_default_graph()
+
+real_img, latent_z = img_inputs(img_size, latent_size)
+
+# encoder
+z_mu, z_logsigma = encoder(real_img, e_units, latent_size)
+latent_z = sample_z(z_mu, z_logsigma)
+# decoder
+d_logits_fake, d_outputs_fake = decoder(latent_z, d_units,img_size)
+
+# E[log P(X|z)]
+recon_loss = tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=d_logits_fake, labels=real_img), 1)
+
+# D_KL(Q(z|X) || P(z))
+kl_loss = 0.5 * tf.reduce_sum(tf.exp(z_logsigma) + z_mu**2 - 1. - z_logsigma, 1)
+
+# VAE loss
+vae_loss = tf.reduce_mean(recon_loss + kl_loss)
+
+train_vars = tf.trainable_variables()
+vae_vars = [var for var in train_vars if var.name.startswith("encoder") or var.name.startswith("decoder")]
+
+#optimizer
+vae_train_opt = tf.train.AdamOptimizer(learning_rate).minimize(vae_loss, var_list=vae_vars)
+
+# batch_size
+batch_size = 100
+# epoch
+epochs = 300
+# sample num
+n_sample = 25
+
+# save sample
+samples = []
+# save loss
+losses = []
+# save generator
+saver = tf.train.Saver(var_list=vae_vars)
+
+(train_images, train_labels), (test_images, test_labels) = tf.keras.datasets.mnist.load_data()
+
+with tf.Session() as sess:
+    sess.run(tf.global_variables_initializer())
+    for e in range(epochs):
+        for batch_i in range(600):
+            start=batch_i*batch_size
+            end=start+batch_size
+            batch = train_images[start:end]
+
+            batch_images = batch.reshape((batch_size, 784))
+            batch_images = batch_images /255
+
+            # Run optimizers
+            _ = sess.run(vae_train_opt, feed_dict={real_img: batch_images})
+
+        recon_loss_d = sess.run(recon_loss,feed_dict={real_img: batch_images})
+        kl_loss_d = sess.run(kl_loss,feed_dict={real_img: batch_images})
+        recon_loss_d=np.mean(recon_loss_d)
+        kl_loss_d=np.mean(kl_loss_d)
+
+        z_mu, z_logsigma =sess.run(encoder(real_img,e_units,latent_size,reuse=True), feed_dict={real_img: batch_images[0].reshape([1,img_size])})
+
+        losses.append((recon_loss_d, kl_loss_d))
+
+        sample_latent = np.random.randn(n_sample, latent_size)
+        gen_samples = sess.run(decoder(latent_z, d_units, img_size, reuse=True),
+                               feed_dict={latent_z: sample_latent})
+        samples.append(gen_samples)
+
+        print("Epoch {}/{}...".format(e + 1, epochs),
+              "Loss: {:.4f}+ {:.4f}...".format(recon_loss_d, kl_loss_d))
+        saver.save(sess, './checkpoints/VAE_3h128n.ckpt')
+
+_ = view_samples(-1, samples)
+
+np.savetxt('./checkpoints/VAEloss_3h128n.txt',losses)
