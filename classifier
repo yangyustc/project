@@ -1,0 +1,157 @@
+import tensorflow.compat.v1 as tf
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+tf.disable_eager_execution()
+
+def img_inputs(real_size, class_number):
+    """
+    real img
+
+    """
+    real_img = tf.placeholder(tf.float32, [None, real_size], name='real_img')
+    class_onehot=tf.placeholder(tf.float32, [None, class_number], name='class_onehot')
+
+    return real_img, class_onehot
+
+def get_classification(real_img, n_units, out_dim, reuse=False, alpha=0.01):
+    with tf.variable_scope("classification", reuse=reuse):
+        # hidden layer
+        x = tf.reshape(real_img, shape=[-1, 28, 28, 1])
+
+        # Convolution Layer with 32 filters and a kernel size of 5
+        conv1 = tf.layers.conv2d(x, 32, 5, activation=tf.nn.relu)
+        # Max Pooling (down-sampling) with strides of 2 and kernel size of 2
+        conv1 = tf.layers.max_pooling2d(conv1, 2, 2)
+        fc1 = tf.layers.flatten(conv1)
+        hidden1 = tf.layers.dense(fc1, n_units)
+        hidden1 = tf.maximum(alpha * hidden1, hidden1)
+        hidden2=tf.layers.dense(hidden1, n_units)
+        # leaky ReLU
+        hidden2 = tf.maximum(alpha * hidden2, hidden2)
+        # dropout
+        hidden2 = tf.layers.dropout(hidden2, rate=0.2)
+        output=tf.layers.dense(hidden2, out_dim)
+        output=tf.nn.softmax(output)
+
+        return output
+
+img_size = 784
+# hidden layer nodes
+c_units = 128
+
+# leaky ReLU
+alpha = 0.01
+# learning_rate
+learning_rate = 0.0001
+
+#set up
+
+tf.reset_default_graph()
+
+real_img,label_true = img_inputs(img_size,10)
+
+# classification
+label_predicted = get_classification(real_img, c_units, 10)
+
+
+#loss
+class_loss = tf.reduce_mean(tf.square(label_true-label_predicted))
+
+train_vars = tf.trainable_variables()
+
+c_vars=[var for var in train_vars if var.name.startswith("classification")]
+
+#optimizer
+c_train_opt = tf.train.AdamOptimizer(learning_rate).minimize(class_loss, var_list=c_vars)
+
+# batch_size
+batch_size = 100
+# epoch
+epochs = 300
+# sample num
+n_sample = 25
+
+# save sample
+samples = []
+# save loss
+losses = []
+accuracy=[]
+# save generator
+
+saver = tf.train.Saver(var_list=c_vars)
+
+(train_images, train_labels), (test_images, test_labels) = tf.keras.datasets.mnist.load_data()
+
+train_labels_onehot=np.eye(10)[train_labels]
+test_labels_onehot=np.eye(10)[test_labels]
+
+with tf.Session() as sess:
+    sess.run(tf.global_variables_initializer())
+    for e in range(epochs):
+        for batch_i in range(500):
+            start=batch_i*batch_size
+            end=start+batch_size
+            batch = train_images[start:end]
+
+            batch_images = batch.reshape((batch_size, 784))
+            batch_images = batch_images * 2.0/256- 1
+
+            batch_labels=train_labels_onehot[start:end]
+
+
+            # Run optimizers
+            _ = sess.run(c_train_opt, feed_dict={real_img: batch_images, label_true: batch_labels})
+
+        idx=np.random.choice(len(test_labels),1000,replace=False)
+        batch = test_images[idx]
+
+        batch_images = batch.reshape((1000, 784))
+        batch_images = batch_images * 2.0 / 256 - 1
+        batch_labels = test_labels_onehot[idx]
+
+        train_loss_c = sess.run(class_loss,
+                                feed_dict={real_img: batch_images, label_true: batch_labels})
+
+        losses.append(train_loss_c)
+        result = sess.run(get_classification(real_img, c_units, 10, reuse=True), feed_dict={real_img: batch_images})
+        label_predicted = np.argmax(result, 1)
+        accuracy.append(np.mean((label_predicted==test_labels[idx])))
+
+
+        print("Epoch {}/{}...".format(e + 1, epochs),
+              "Loss: {:.4f}...".format(train_loss_c))
+
+        saver.save(sess, './checkpoints/classification.ckpt')
+
+    idx = np.random.choice(len(test_labels), 20, replace=False)
+    batch = test_images[idx]
+
+    batch_images = batch.reshape((20, 784))
+    batch_images = batch_images * 2.0 / 256 - 1
+    batch_labels = test_labels[idx]
+
+    result=sess.run(get_classification(real_img, c_units, 10, reuse=True),feed_dict={real_img: batch_images})
+
+    label_predicted=np.argmax(result,1)
+
+    print(batch_labels, label_predicted)
+
+
+
+fig,left_axis=plt.subplots()
+right_axis=left_axis.twinx()
+ln1=left_axis.plot(range(epochs), losses,'r',linewidth=2,label='Loss')
+ln2=right_axis.plot(range(epochs), accuracy,'g',linewidth=2,label='Accuracy')
+lns=ln1+ln2
+labs=[l.get_label() for l in lns]
+left_axis.legend(lns, labs, loc='upper right',frameon=True,fontsize=20)
+left_axis.set_xlabel('epochs',fontsize=20)
+left_axis.set_ylabel('Loss',fontsize=20)
+right_axis.set_ylabel('Accuracy',fontsize=20)
+left_axis.set_ylim((0,0.02))
+right_axis.set_ylim((0.8,1))
+plt.show()
+
+np.savetxt('./checkpoints/classifierloss.txt',[losses,accuracy])
